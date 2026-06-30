@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Ice's Single-Legged Balance Assessment</title>
+    
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose@0.5.1675469404/pose.min.js" crossorigin="anonymous"></script>
+
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #121212;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+            color: #ffffff;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: flex-start;
+            min-height: 100vh;
+            overflow-x: hidden;
+        }
+
+        h2 {
+            margin: 15px 0 5px 0;
+            font-size: 1.4rem;
+            text-align: center;
+            color: #00ffcc;
+        }
+
+        #app-container {
+            position: relative;
+            width: 90vw;
+            max-width: 400px;
+            height: 120vw;
+            max-height: 533px;
+            margin-top: 10px;
+            border-radius: 16px;
+            overflow: hidden;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.7);
+            background: #000;
+        }
+
+        #webcam, #output_canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            transform: scaleX(-1);
+        }
+
+        #countdown-overlay {
+            display: none; 
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 8rem; 
+            font-weight: 900;
+            text-shadow: 0 4px 20px rgba(0, 0, 0, 0.9);
+            z-index: 10;
+            pointer-events: none;
+            transition: all 0.15s ease-in-out;
+        }
+
+        /* Streamlined Top HUD UI Layer */
+        #overlay-ui {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            box-sizing: border-box;
+            padding: 12px;
+            z-index: 5;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            align-items: center;
+        }
+
+        .hud-element {
+            background: rgba(0, 0, 0, 0.8);
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-size: 0.95rem;
+            font-weight: bold;
+            border: 1px solid #00ffcc;
+            text-align: center;
+            width: 85%;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.5);
+        }
+
+        #timer-display {
+            color: #ffff00;
+            border-color: #ffff00;
+        }
+
+        #state-message {
+            color: #00ffcc;
+        }
+
+        /* Summary Dashboard Modal */
+        #summary-modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            background: rgba(18, 18, 18, 0.95);
+            z-index: 100;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+            box-sizing: border-box;
+        }
+
+        .summary-card {
+            background: #222;
+            border: 2px solid #00ffcc;
+            border-radius: 16px;
+            padding: 25px;
+            width: 100%;
+            max-width: 350px;
+            text-align: center;
+        }
+
+        .metric {
+            margin: 15px 0;
+            font-size: 1.1rem;
+        }
+
+        .metric span {
+            font-weight: bold;
+            color: #ff0055;
+            font-size: 1.3rem;
+        }
+
+        button {
+            background: #00ffcc;
+            color: #121212;
+            border: none;
+            padding: 12px 30px;
+            font-size: 1rem;
+            font-weight: bold;
+            border-radius: 25px;
+            margin-top: 20px;
+            cursor: pointer;
+        }
+    </style>
+</head>
+<body>
+
+    <h2>Single-Legged Balance Test</h2>
+
+    <div id="app-container">
+        <video id="webcam" autoplay playsinline></video>
+        <canvas id="output_canvas"></canvas>
+        
+        <div id="countdown-overlay">3</div>
+        
+        <div id="overlay-ui">
+            <div id="state-message" class="hud-element">Place hands on hips & lift one leg backward</div>
+            <div id="timer-display" class="hud-element">Waiting for posture match...</div>
+        </div>
+    </div>
+
+    <div id="summary-modal">
+        <div class="summary-card">
+            <h2 style="margin-top:0;">Assessment Report</h2>
+            <hr style="border-color: #444; margin: 15px 0;">
+            <div class="metric">Max Center Sway Deviation: <br><span id="res-sway">0.0°</span></div>
+            <div class="metric">Hands-Off-Hips Errors: <br><span id="res-hand-err">0</span> times</div>
+            <div class="metric">Foot Grounded Errors: <br><span id="res-foot-err">0</span> times</div>
+            <button onclick="resetAssessment()">Test Again</button>
+        </div>
+    </div>
+
+    <script>
+        const videoElement = document.getElementById('webcam');
+        const canvasElement = document.getElementById('output_canvas');
+        const canvasCtx = canvasElement.getContext('2d');
+        
+        const timerDisplay = document.getElementById('timer-display');
+        const stateMessage = document.getElementById('state-message');
+        const countdownOverlay = document.getElementById('countdown-overlay');
+        const summaryModal = document.getElementById('summary-modal');
+        
+        let appState = "ALIGNING"; 
+        let countdownValue = 3;
+        let testTimerValue = 60;
+        let countdownInterval, testInterval;
+
+        const colorMap = { 3: "#ff3333", 2: "#ffcc00", 1: "#00ff66" };
+
+        // Core Tracking Analytics
+        let baselineCenterAngle = null;
+        let baselineLeftHipWristDist = null;
+        let baselineRightHipWristDist = null;
+        let standingLegSide = null; // Track which leg stays on the ground ('left' or 'right')
+
+        let errorFlash = { leftHand: false, rightHand: false, footDrop: false };
+        let maxSwayDeviation = 0;
+        let handErrorCount = 0;
+        let footErrorCount = 0;
+        
+        let handErrorActive = false;
+        let footErrorActive = false;
+
+        function resizeCanvas() {
+            canvasElement.width = videoElement.videoWidth || 400;
+            canvasElement.height = videoElement.videoHeight || 533;
+        }
+        videoElement.addEventListener('loadedmetadata', resizeCanvas);
+
+        function onResults(results) {
+            resizeCanvas();
+            canvasCtx.save();
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+            canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+
+            if (results.poseLandmarks) {
+                const landmarks = results.poseLandmarks;
+
+                const nose = landmarks[0];
+                const leftHip = landmarks[23];
+                const rightHip = landmarks[24];
+                const leftWrist = landmarks[15];
+                const rightWrist = landmarks[16];
+                const leftKnee = landmarks[25];
+                const rightKnee = landmarks[26];
+                const leftAnkle = landmarks[27];
+                const rightAnkle = landmarks[28];
+
+                if (nose.visibility > 0.5 && leftHip.visibility > 0.5 && rightHip.visibility > 0.5) {
+                    const midHipX = (leftHip.x + rightHip.x) / 2;
+                    const midHipY = (leftHip.y + rightHip.y) / 2;
+
+                    const deltaX = nose.x - midHipX;
+                    const deltaY = nose.y - midHipY;
+                    const currentAngle = Math.atan2(deltaX, -deltaY) * (180 / Math.PI);
+
+                    // --- DETECT ANKLE-KNEE COLLISION (POSTURE MATCHING) ---
+                    if (appState === "ALIGNING") {
+                        const leftAnkleKneeDist = Math.hypot(leftAnkle.x - leftKnee.x, leftAnkle.y - leftKnee.y);
+                        const rightAnkleKneeDist = Math.hypot(rightAnkle.x - rightKnee.x, rightAnkle.y - rightKnee.y);
+
+                        // Threshold 0.12 checks if the ankle is folded up close to the knee
+                        if (leftAnkleKneeDist < 0.12 && leftAnkle.visibility > 0.5) {
+                            standingLegSide = "right"; // Left leg is lifted, right is standing
+                            startCountdown();
+                        } else if (rightAnkleKneeDist < 0.12 && rightAnkle.visibility > 0.5) {
+                            standingLegSide = "left";  // Right leg is lifted, left is standing
+                            startCountdown();
+                        }
+                    }
+
+                    // --- RUN EVALUATIONS DURING ACTIVE TEST ---
+                    if (appState === "TESTING") {
+                        if (baselineCenterAngle === null) {
+                            baselineCenterAngle = currentAngle;
+                            baselineLeftHipWristDist = Math.hypot(leftHip.x - leftWrist.x, leftHip.y - leftWrist.y);
+                            baselineRightHipWristDist = Math.hypot(rightHip.x - rightWrist.x, rightHip.y - rightWrist.y);
+                        }
+
+                        // 1. Center sway deviation tracking
+                        let angleDeviation = Math.abs(currentAngle - baselineCenterAngle);
+                        if (angleDeviation > maxSwayDeviation) maxSwayDeviation = angleDeviation;
+
+                        // 2. Hands-on-Hips check
+                        const curLeftHandDist = Math.hypot(leftHip.x - leftWrist.x, leftHip.y - leftWrist.y);
+                        const curRightHandDist = Math.hypot(rightHip.x - rightWrist.x, rightHip.y - rightWrist.y);
+                        let leftHandErr = curLeftHandDist > baselineLeftHipWristDist * 1.4;
+                        let rightHandErr = curRightHandDist > baselineRightHipWristDist * 1.4;
+                        
+                        errorFlash.leftHand = leftHandErr;
+                        errorFlash.rightHand = rightHandErr;
+
+                        if (leftHandErr || rightHandErr) {
+                            if (!handErrorActive) { handErrorCount++; handErrorActive = true; }
+                        } else { handErrorActive = false; }
+
+                        // 3. Foot Grounded/Dropped Check
+                        // Checks if the level of the lifted ankle drops down to match the standing ankle level
+                        const ankleLevelDifference = Math.abs(leftAnkle.y - rightAnkle.y);
+                        if (ankleLevelDifference < 0.05 && leftAnkle.visibility > 0.5 && rightAnkle.visibility > 0.5) {
+                            errorFlash.footDrop = true;
+                            if (!footErrorActive) { footErrorCount++; footErrorActive = true; }
+                        } else {
+                            errorFlash.footDrop = false;
+                            footErrorActive = false;
+                        }
+                    }
+
+                    // --- AR DRAWING RENDERS ---
+                    // Posture alignment line
+                    canvasCtx.beginPath();
+                    canvasCtx.moveTo(nose.x * canvasElement.width, nose.y * canvasElement.height);
+                    canvasCtx.lineTo(midHipX * canvasElement.width, midHipY * canvasElement.height);
+                    canvasCtx.lineWidth = 5;
+                    canvasCtx.strokeStyle = '#ffff00';
+                    canvasCtx.stroke();
+
+                    // Joints drawing configuration
+                    const drawJoint = (landmark, isError, color) => {
+                        if (landmark.visibility > 0.5) {
+                            canvasCtx.beginPath();
+                            canvasCtx.arc(landmark.x * canvasElement.width, landmark.y * canvasElement.height, 7, 0, 2 * Math.PI);
+                            canvasCtx.fillStyle = isError ? '#ff0000' : color;
+                            canvasCtx.fill();
+                            canvasCtx.lineWidth = 2;
+                            canvasCtx.strokeStyle = '#ffffff';
+                            canvasCtx.stroke();
+                        }
+                    };
+
+                    // Draw Wrists
+                    drawJoint(leftWrist, errorFlash.leftHand, '#00ffcc');
+                    drawJoint(rightWrist, errorFlash.rightHand, '#00ffcc');
+
+                    // Draw Ankles (Lifted side flashes red if grounded error occurs)
+                    const leftAnkleIsErr = (standingLegSide === "right" && errorFlash.footDrop);
+                    const rightAnkleIsErr = (standingLegSide === "left" && errorFlash.footDrop);
+                    drawJoint(leftAnkle, leftAnkleIsErr, '#00ffcc');
+                    drawJoint(rightAnkle, rightAnkleIsErr, '#00ffcc');
+                    
+                    // Draw reference knees
+                    drawJoint(leftKnee, false, '#00ffcc');
+                    drawJoint(rightKnee, false, '#00ffcc');
+                }
+            }
+            canvasCtx.restore();
+        }
+
+        function startCountdown() {
+            appState = "COUNTDOWN";
+            stateMessage.textContent = "Stance Matched! Keep Steady...";
+            
+            // FIX: Instantly paint the number 3 in Red on frame zero
+            countdownOverlay.textContent = countdownValue;
+            countdownOverlay.style.color = colorMap[countdownValue];
+            countdownOverlay.style.display = "block";
+            timerDisplay.textContent = `Ready: ${countdownValue}`;
+
+            countdownInterval = setInterval(() => {
+                countdownValue--;
+                if (countdownValue > 0) {
+                    countdownOverlay.textContent = countdownValue;
+                    countdownOverlay.style.color = colorMap[countdownValue];
+                    
+                    countdownOverlay.style.transform = "translate(-50%, -50%) scale(1.2)";
+                    setTimeout(() => countdownOverlay.style.transform = "translate(-50%, -50%) scale(1.0)", 150);
+
+                    timerDisplay.textContent = `Ready: ${countdownValue}`;
+                } else {
+                    clearInterval(countdownInterval);
+                    countdownOverlay.style.display = "none";
+                    startTest();
+                }
+            }, 1000);
+        }
+
+        function startTest() {
+            appState = "TESTING";
+            stateMessage.textContent = "Assessment Active. Maintain Balance.";
+            stateMessage.style.color = "#ffff00";
+            stateMessage.style.borderColor = "#ffff00";
+
+            testInterval = setInterval(() => {
+                testTimerValue--;
+                timerDisplay.textContent = `Time Remaining: ${testTimerValue}s`;
+                
+                if (testTimerValue <= 0) {
+                    clearInterval(testInterval);
+                    finishTest();
+                }
+            }, 1000);
+        }
+
+        function finishTest() {
+            appState = "FINISHED";
+            document.getElementById('res-sway').textContent = `${maxSwayDeviation.toFixed(1)}°`;
+            document.getElementById('res-hand-err').textContent = handErrorCount;
+            document.getElementById('res-foot-err').textContent = footErrorCount;
+            summaryModal.style.display = "flex";
+        }
+
+        function resetAssessment() {
+            appState = "ALIGNING";
+            countdownValue = 3;
+            testTimerValue = 60;
+            baselineCenterAngle = null;
+            standingLegSide = null;
+            maxSwayDeviation = 0;
+            handErrorCount = 0;
+            footErrorCount = 0;
+            errorFlash = { leftHand: false, rightHand: false, footDrop: false };
+            
+            stateMessage.textContent = "Place hands on hips & lift one leg backward";
+            stateMessage.style.color = "#00ffcc";
+            stateMessage.style.borderColor = "#00ffcc";
+            timerDisplay.textContent = "Waiting for posture match...";
+            
+            countdownOverlay.style.display = "none";
+            summaryModal.style.display = "none";
+        }
+
+        const pose = new Pose({
+            locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose@0.5.1675469404/${file}`
+        });
+        pose.setOptions({
+            modelComplexity: 1,
+            smoothLandmarks: true,
+            minDetectionConfidence: 0.6,
+            minTrackingConfidence: 0.6
+        });
+        pose.onResults(onResults);
+
+        const camera = new Camera(videoElement, {
+            onFrame: async () => { await pose.send({ image: videoElement }); },
+            facingMode: 'user',
+            width: 360,
+            height: 480
+        });
+        camera.start();
+    </script>
+</body>
+</html>
