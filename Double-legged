@@ -1,0 +1,440 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Ice's Double-Legged Balance Assessment</title>
+    
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose@0.5.1675469404/pose.min.js" crossorigin="anonymous"></script>
+
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #121212;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+            color: #ffffff;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: flex-start;
+            min-height: 100vh;
+            overflow-x: hidden;
+        }
+
+        h2 {
+            margin: 15px 0 5px 0;
+            font-size: 1.4rem;
+            text-align: center;
+            color: #00ffcc;
+        }
+
+        /* Mobile-optimized vertical responsive container */
+        #app-container {
+            position: relative;
+            width: 90vw;
+            max-width: 400px;
+            height: 120vw;
+            max-height: 533px;
+            margin-top: 10px;
+            border-radius: 16px;
+            overflow: hidden;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.7);
+            background: #000;
+        }
+
+        /* Video and canvas layered and mirrored for front camera */
+        #webcam, #output_canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            transform: scaleX(-1);
+        }
+
+        /* Massive Centered Countdown Overlay */
+        #countdown-overlay {
+            display: none; 
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 8rem; 
+            font-weight: 900;
+            text-shadow: 0 4px 20px rgba(0, 0, 0, 0.9);
+            z-index: 10;
+            pointer-events: none;
+            transition: all 0.15s ease-in-out;
+        }
+
+        /* Streamlined Top HUD UI Layer (Leaves feet unobstructed) */
+        #overlay-ui {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            box-sizing: border-box;
+            padding: 12px;
+            z-index: 5;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            align-items: center;
+        }
+
+        .hud-element {
+            background: rgba(0, 0, 0, 0.8);
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-size: 0.95rem;
+            font-weight: bold;
+            border: 1px solid #00ffcc;
+            text-align: center;
+            width: 85%;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.5);
+        }
+
+        #timer-display {
+            color: #ffff00;
+            border-color: #ffff00;
+        }
+
+        #state-message {
+            color: #00ffcc;
+        }
+
+        /* Modal Summary screen displayed post-test */
+        #summary-modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            background: rgba(18, 18, 18, 0.95);
+            z-index: 100;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+            box-sizing: border-box;
+        }
+
+        .summary-card {
+            background: #222;
+            border: 2px solid #00ffcc;
+            border-radius: 16px;
+            padding: 25px;
+            width: 100%;
+            max-width: 350px;
+            text-align: center;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.5);
+        }
+
+        .metric {
+            margin: 15px 0;
+            font-size: 1.1rem;
+        }
+
+        .metric span {
+            font-weight: bold;
+            color: #ff0055;
+            font-size: 1.3rem;
+        }
+
+        button {
+            background: #00ffcc;
+            color: #121212;
+            border: none;
+            padding: 12px 30px;
+            font-size: 1rem;
+            font-weight: bold;
+            border-radius: 25px;
+            margin-top: 20px;
+            cursor: pointer;
+        }
+    </style>
+</head>
+<body>
+
+    <h2>Double-Legged Balance Test</h2>
+
+    <div id="app-container">
+        <video id="webcam" autoplay playsinline></video>
+        <canvas id="output_canvas"></canvas>
+        
+        <div id="countdown-overlay">3</div>
+        
+        <div id="overlay-ui">
+            <div id="state-message" class="hud-element">Stand straight with feet spread & hands on hips</div>
+            <div id="timer-display" class="hud-element">Waiting for full body alignment...</div>
+        </div>
+    </div>
+
+    <div id="summary-modal">
+        <div class="summary-card">
+            <h2 style="margin-top:0;">Assessment Report</h2>
+            <hr style="border-color: #444; margin: 15px 0;">
+            <div class="metric">Max Center Sway Deviation: <br><span id="res-sway">0.0°</span></div>
+            <div class="metric">Hands-Off-Hips Errors: <br><span id="res-hand-err">0</span> times</div>
+            <div class="metric">Foot Step Out Errors: <br><span id="res-foot-err">0</span> times</div>
+            <button onclick="resetAssessment()">Test Again</button>
+        </div>
+    </div>
+
+    <script>
+        const videoElement = document.getElementById('webcam');
+        const canvasElement = document.getElementById('output_canvas');
+        const canvasCtx = canvasElement.getContext('2d');
+        
+        // UI Elements
+        const timerDisplay = document.getElementById('timer-display');
+        const stateMessage = document.getElementById('state-message');
+        const countdownOverlay = document.getElementById('countdown-overlay');
+        const summaryModal = document.getElementById('summary-modal');
+        
+        // State Machine Management
+        let appState = "ALIGNING"; 
+        let countdownValue = 3;
+        let testTimerValue = 60;
+        let countdownInterval, testInterval;
+
+        const colorMap = { 3: "#ff3333", 2: "#ffcc00", 1: "#00ff66" };
+
+        // Baseline Metrics
+        let baselineCenterAngle = null;
+        let baselineAnkleDistance = null;
+        let baselineLeftHipWristDist = null;
+        let baselineRightHipWristDist = null;
+
+        // Live error tracking tags for flashing
+        let errorFlash = { leftHand: false, rightHand: false, feet: false };
+
+        // Final Analytics Metrics
+        let maxSwayDeviation = 0;
+        let handErrorCount = 0;
+        let footErrorCount = 0;
+        
+        // Cooldown switches
+        let handErrorActive = false;
+        let footErrorActive = false;
+
+        function resizeCanvas() {
+            canvasElement.width = videoElement.videoWidth || 400;
+            canvasElement.height = videoElement.videoHeight || 533;
+        }
+        videoElement.addEventListener('loadedmetadata', resizeCanvas);
+
+        function onResults(results) {
+            resizeCanvas();
+            canvasCtx.save();
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+            canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+
+            if (results.poseLandmarks) {
+                const landmarks = results.poseLandmarks;
+
+                const nose = landmarks[0];
+                const leftHip = landmarks[23];
+                const rightHip = landmarks[24];
+                const leftWrist = landmarks[15];
+                const rightWrist = landmarks[16];
+                const leftAnkle = landmarks[27];
+                const rightAnkle = landmarks[28];
+
+                const coreVisible = nose.visibility > 0.5 && leftHip.visibility > 0.5 && rightHip.visibility > 0.5;
+
+                if (coreVisible) {
+                    const midHipX = (leftHip.x + rightHip.x) / 2;
+                    const midHipY = (leftHip.y + rightHip.y) / 2;
+
+                    const deltaX = nose.x - midHipX;
+                    const deltaY = nose.y - midHipY;
+                    const currentAngle = Math.atan2(deltaX, -deltaY) * (180 / Math.PI);
+
+                    // Auto-trigger countdown once user's full body is visible in frame
+                    if (appState === "ALIGNING") {
+                        if (leftAnkle.visibility > 0.5 && rightAnkle.visibility > 0.5) {
+                            startCountdown();
+                        }
+                    }
+
+                    // Run calculations during active testing phase
+                    if (appState === "TESTING") {
+                        if (baselineCenterAngle === null) {
+                            baselineCenterAngle = currentAngle;
+                            baselineAnkleDistance = Math.hypot(leftAnkle.x - rightAnkle.x, leftAnkle.y - rightAnkle.y);
+                            baselineLeftHipWristDist = Math.hypot(leftHip.x - leftWrist.x, leftHip.y - leftWrist.y);
+                            baselineRightHipWristDist = Math.hypot(rightHip.x - rightWrist.x, rightHip.y - rightWrist.y);
+                        }
+
+                        // 1. Center sway tracking
+                        let angleDeviation = Math.abs(currentAngle - baselineCenterAngle);
+                        if (angleDeviation > maxSwayDeviation) maxSwayDeviation = angleDeviation;
+
+                        // 2. Hands Released Check
+                        const curLeftHandDist = Math.hypot(leftHip.x - leftWrist.x, leftHip.y - leftWrist.y);
+                        const curRightHandDist = Math.hypot(rightHip.x - rightWrist.x, rightHip.y - rightWrist.y);
+                        
+                        let leftHandErr = curLeftHandDist > baselineLeftHipWristDist * 1.4;
+                        let rightHandErr = curRightHandDist > baselineRightHipWristDist * 1.4;
+                        errorFlash.leftHand = leftHandErr;
+                        errorFlash.rightHand = rightHandErr;
+
+                        if (leftHandErr || rightHandErr) {
+                            if (!handErrorActive) { handErrorCount++; handErrorActive = true; }
+                        } else { handErrorActive = false; }
+
+                        // 3. Foot Step Out Check
+                        if (leftAnkle.visibility > 0.5 && rightAnkle.visibility > 0.5) {
+                            const curAnkleDist = Math.hypot(leftAnkle.x - rightAnkle.x, leftAnkle.y - rightAnkle.y);
+                            const footDev = Math.abs(curAnkleDist - baselineAnkleDistance) / baselineAnkleDistance;
+                            
+                            if (footDev > 0.25) {
+                                errorFlash.feet = true;
+                                if (!footErrorActive) { footErrorCount++; footErrorActive = true; }
+                            } else {
+                                errorFlash.feet = false;
+                                footErrorActive = false;
+                            }
+                        }
+                    }
+
+                    // --- DRAW AR OVERLAYS ---
+                    canvasCtx.beginPath();
+                    canvasCtx.moveTo(nose.x * canvasElement.width, nose.y * canvasElement.height);
+                    canvasCtx.lineTo(midHipX * canvasElement.width, midHipY * canvasElement.height);
+                    canvasCtx.lineWidth = 5;
+                    canvasCtx.strokeStyle = '#ffff00';
+                    canvasCtx.stroke();
+
+                    // Center nose & midhip dots
+                    canvasCtx.beginPath();
+                    canvasCtx.arc(nose.x * canvasElement.width, nose.y * canvasElement.height, 6, 0, 2 * Math.PI);
+                    canvasCtx.fillStyle = '#00ffff';
+                    canvasCtx.fill();
+
+                    canvasCtx.beginPath();
+                    canvasCtx.arc(midHipX * canvasElement.width, midHipY * canvasElement.height, 7, 0, 2 * Math.PI);
+                    canvasCtx.fillStyle = '#ffff00';
+                    canvasCtx.fill();
+
+                    const drawJoint = (landmark, isError, color) => {
+                        if (landmark.visibility > 0.5) {
+                            canvasCtx.beginPath();
+                            canvasCtx.arc(landmark.x * canvasElement.width, landmark.y * canvasElement.height, 7, 0, 2 * Math.PI);
+                            canvasCtx.fillStyle = isError ? '#ff0000' : color;
+                            canvasCtx.fill();
+                            canvasCtx.lineWidth = 2;
+                            canvasCtx.strokeStyle = '#ffffff';
+                            canvasCtx.stroke();
+                        }
+                    };
+
+                    drawJoint(leftWrist, errorFlash.leftHand, '#00ffcc');
+                    drawJoint(rightWrist, errorFlash.rightHand, '#00ffcc');
+                    drawJoint(leftAnkle, errorFlash.feet, '#00ffcc');
+                    drawJoint(rightAnkle, errorFlash.feet, '#00ffcc');
+                }
+            }
+            canvasCtx.restore();
+        }
+
+        function startCountdown() {
+            appState = "COUNTDOWN";
+            stateMessage.textContent = "Hold position! Keep Steady...";
+            
+            // FIX: Instantly map number '3' to Red at frame zero to prevent initial white frame flash
+            countdownOverlay.textContent = countdownValue;
+            countdownOverlay.style.color = colorMap[countdownValue];
+            countdownOverlay.style.display = "block";
+            timerDisplay.textContent = `Ready: ${countdownValue}`;
+
+            countdownInterval = setInterval(() => {
+                countdownValue--;
+                if (countdownValue > 0) {
+                    countdownOverlay.textContent = countdownValue;
+                    countdownOverlay.style.color = colorMap[countdownValue];
+                    
+                    countdownOverlay.style.transform = "translate(-50%, -50%) scale(1.2)";
+                    setTimeout(() => countdownOverlay.style.transform = "translate(-50%, -50%) scale(1.0)", 150);
+
+                    timerDisplay.textContent = `Ready: ${countdownValue}`;
+                } else {
+                    clearInterval(countdownInterval);
+                    countdownOverlay.style.display = "none";
+                    startTest();
+                }
+            }, 1000);
+        }
+
+        function startTest() {
+            appState = "TESTING";
+            stateMessage.textContent = "Assessment Active. Maintain Balance.";
+            stateMessage.style.borderColor = "#ffff00";
+            stateMessage.style.color = "#ffff00";
+
+            testInterval = setInterval(() => {
+                testTimerValue--;
+                timerDisplay.textContent = `Time Remaining: ${testTimerValue}s`;
+                
+                if (testTimerValue <= 0) {
+                    clearInterval(testInterval);
+                    finishTest();
+                }
+            }, 1000);
+        }
+
+        function finishTest() {
+            appState = "FINISHED";
+            document.getElementById('res-sway').textContent = `${maxSwayDeviation.toFixed(1)}°`;
+            document.getElementById('res-hand-err').textContent = handErrorCount;
+            document.getElementById('res-foot-err').textContent = footErrorCount;
+            
+            summaryModal.style.display = "flex";
+        }
+
+        function resetAssessment() {
+            appState = "ALIGNING";
+            countdownValue = 3;
+            testTimerValue = 60;
+            baselineCenterAngle = null;
+            maxSwayDeviation = 0;
+            handErrorCount = 0;
+            footErrorCount = 0;
+            errorFlash = { leftHand: false, rightHand: false, feet: false };
+            
+            stateMessage.textContent = "Stand straight with feet spread & hands on hips";
+            stateMessage.style.borderColor = "#00ffcc";
+            stateMessage.style.color = "#00ffcc";
+            timerDisplay.textContent = "Waiting for full body alignment...";
+            
+            countdownOverlay.style.display = "none";
+            summaryModal.style.display = "none";
+        }
+
+        const pose = new Pose({
+            locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose@0.5.1675469404/${file}`
+        });
+
+        pose.setOptions({
+            modelComplexity: 1, 
+            smoothLandmarks: true,
+            minDetectionConfidence: 0.6,
+            minTrackingConfidence: 0.6
+        });
+        pose.onResults(onResults);
+
+        const camera = new Camera(videoElement, {
+            onFrame: async () => { await pose.send({ image: videoElement }); },
+            facingMode: 'user', 
+            width: 360,
+            height: 480
+        });
+        camera.start();
+    </script>
+</body>
+</html>
